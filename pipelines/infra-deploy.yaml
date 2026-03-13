@@ -129,6 +129,6 @@ stages:
         if [ "${{ parameters.action }}" = "apply" ]; then
           terraform apply tfplan
         else
-          terraform destroy -auto-approve
+          terraform destroy 
         fi
       workingDirectory: $(tfWorkingDir)
