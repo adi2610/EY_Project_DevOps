@@ -49,7 +49,7 @@ module "vnet" {
   source = "./modules/vnet"
 
   name                = "${var.project_name}-${var.environment}-vnet"
-  location            = var.location
+  location            = var.location    
   resource_group_name = module.resource_group.name
 
   address_space = var.vnet_address_space
