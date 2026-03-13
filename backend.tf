@@ -6,6 +6,6 @@ terraform {
     resource_group_name  = "rg-terraform-state"
     storage_account_name = "tfstateprod123"
     container_name       = "tfstate"
-    key                  = "aks01.tfstate"
+    key                  = "{{paramters.env}}.tfstate"
   }
 }
