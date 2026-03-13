@@ -1,0 +1,275 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+
+  imageRepository: springboot-service
+  containerRegistry: acrprod.azurecr.io
+  imageTag: $(Build.BuildId)
+
+  helmChartPath: helm/springboot-service
+
+stages:
+
+# =================================================
+# BUILD + TEST + SECURITY SCANS
+# =================================================
+
+- stage: Build_Test
+  displayName: Build and Test
+
+  jobs:
+
+  - job: MavenBuild
+
+    pool:
+      vmImage: ubuntu-latest
+
+    steps:
+
+    - checkout: self
+
+    # Maven build
+    - task: Maven@3
+      displayName: Maven Build
+
+      inputs:
+        mavenPomFile: pom.xml
+        goals: clean package
+        options: "-DskipTests=false"
+        javaHomeOption: JDKVersion
+        jdkVersionOption: 17
+
+    # SonarQube
+    - task: SonarQubePrepare@5
+      inputs:
+        SonarQube: SonarServiceConnection
+        scannerMode: Maven
+        projectKey: springboot-service
+
+    - task: SonarQubeAnalyze@5
+
+    - task: SonarQubePublish@5
+
+    # TruffleHog Secret Scan
+    - script: |
+        curl -s https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | bash
+        trufflehog filesystem .
+      displayName: Secret Scan
+
+    # Snyk Dependency Scan
+    - script: |
+        snyk test
+      displayName: Snyk Dependency Scan
+
+    # Docker build
+    - task: Docker@2
+      displayName: Build Docker Image
+
+      inputs:
+        command: build
+        repository: $(imageRepository)
+        Dockerfile: Dockerfile
+        tags: |
+          $(imageTag)
+
+    # Trivy Image Scan
+    - script: |
+        trivy image $(containerRegistry)/$(imageRepository):$(imageTag)
+      displayName: Trivy Container Scan
+
+    # Push image
+    - task: Docker@2
+      displayName: Push Image
+
+      inputs:
+        command: push
+        containerRegistry: acr-service-connection
+        repository: $(imageRepository)
+        tags: |
+          $(imageTag)
+
+    # Publish Helm chart
+    - publish: $(helmChartPath)
+      artifact: helm-chart
+
+# =================================================
+# APPROVAL GATE
+# =================================================
+
+- stage: Approve
+  displayName: Release Approval
+
+  dependsOn: Build_Test
+
+  jobs:
+
+  - deployment: ApprovalGate
+
+    environment: release-approval
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - script: echo "Waiting for manual approval"
+
+# =================================================
+# DEV DEPLOYMENT
+# =================================================
+
+- stage: DEV
+
+  displayName: Deploy DEV
+
+  dependsOn: Approve
+
+  variables:
+    environment: dev
+
+  jobs:
+
+  - deployment: DeployDEV
+
+    environment: dev
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - download: current
+            artifact: helm-chart
+
+          - task: HelmInstaller@1
+            inputs:
+              helmVersionToInstall: '3.12.0'
+
+          - task: HelmDeploy@0
+
+            displayName: Helm Deploy DEV
+
+            inputs:
+
+              connectionType: Azure Resource Manager
+              azureSubscription: aks-dev-serviceconnection
+              azureResourceGroup: rg-aks-dev
+              kubernetesCluster: aks-dev
+
+              namespace: app
+
+              command: upgrade
+
+              chartType: FilePath
+              chartPath: $(Pipeline.Workspace)/helm-chart
+
+              releaseName: springboot-service
+
+              overrideValues: |
+                image.repository=$(containerRegistry)/$(imageRepository)
+                image.tag=$(imageTag)
+
+# =================================================
+# TST DEPLOYMENT
+# =================================================
+
+- stage: TST
+
+  displayName: Deploy TST
+
+  dependsOn: DEV
+
+  jobs:
+
+  - deployment: DeployTST
+
+    environment: tst
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - task: HelmInstaller@1
+
+          - task: HelmDeploy@0
+
+            displayName: Helm Deploy TST
+
+            inputs:
+
+              connectionType: Azure Resource Manager
+              azureSubscription: aks-tst-serviceconnection
+              azureResourceGroup: rg-aks-tst
+              kubernetesCluster: aks-tst
+
+              namespace: app
+
+              command: upgrade
+
+              chartType: FilePath
+              chartPath: $(Pipeline.Workspace)/helm-chart
+
+              releaseName: springboot-service
+
+              overrideValues: |
+                image.repository=$(containerRegistry)/$(imageRepository)
+                image.tag=$(imageTag)
+
+# =================================================
+# STA DEPLOYMENT
+# =================================================
+
+- stage: STA
+
+  displayName: Deploy STA
+
+  dependsOn: TST
+
+  jobs:
+
+  - deployment: DeploySTA
+
+    environment: sta
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - task: HelmInstaller@1
+
+          - task: HelmDeploy@0
+
+            displayName: Helm Deploy STA
+
+            inputs:
+
+              connectionType: Azure Resource Manager
+              azureSubscription: aks-sta-serviceconnection
+              azureResourceGroup: rg-aks-sta
+              kubernetesCluster: aks-sta
+
+              namespace: app
+
+              command: upgrade
+
+              chartType: FilePath
+              chartPath: $(Pipeline.Workspace)/helm-chart
+
+              releaseName: springboot-service
+
+              overrideValues: |
+                image.repository=$(containerRegistry)/$(imageRepository)
+                image.tag=$(imageTag)
